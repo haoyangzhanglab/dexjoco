@@ -1,0 +1,26 @@
+# Reset inherited robot-specific fields before the observation recipe is merged.
+normalization: null
+env_runner:
+  _target_: dexjoco.policy_runner.DexJoCoRunner
+  env_kwargs: null
+dataset:
+  augmentation_cfg:
+    state: null
+
+task_name: water_plant
+zarr_path: ${oc.env:DEXJOCO_ROOT}/datasets/policy/${task_name}.zarr
+action_key: action_rotvec
+
+agent:
+  state_key: proprio
+  state_dim: null
+  action_dim: null
+
+training:
+  use_compile: false
+
+hydra:
+  run:
+    dir: ${oc.env:DEXJOCO_ROOT}/outputs/train/${policy_name}/${task_name}/${run_id:}_seed${training.seed}
+  sweep:
+    dir: ${oc.env:DEXJOCO_ROOT}/outputs/train/${policy_name}/${task_name}/${run_id:}_seed${training.seed}

@@ -1,0 +1,11 @@
+# Install with: python -m pip install -c requirements-policy.txt -e './dexjoco[policy]'
+# Preserve the existing policy numerical and training stack.
+numpy==1.26.4
+scipy==1.15.3
+torch==2.4.1
+torchvision==0.19.1
+gymnasium==1.4.0
+zarr==2.18.3
+numcodecs==0.13.1
+jax==0.4.38
+jaxlib==0.4.38

@@ -7,11 +7,11 @@ dependencies:
   - pip
   - av
   - glfw
-  - gymnasium=1.0.0
+  - "gymnasium>=1.3,<1.5"
   - mujoco=3.4.0
   - numcodecs
   - numpy==1.26.4
-  - scipy
+  - scipy=1.15.3
   - "zarr<3"
   - pip:
       - -e ./dexjoco

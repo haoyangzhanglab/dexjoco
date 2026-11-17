@@ -3,13 +3,15 @@
 This document describes how to adapt a custom policy to DexJoCo and how to
 evaluate it against the benchmark environments.
 
-DexJoCo exposes one environment contract: observations are collected from the
-simulation, passed into a policy, converted into actions, and executed back in
-the simulator. The current OpenPI client in
+This guide covers the teleoperation/OpenPI environment interfaces in `sim/`
+and `tasks/`. The OpenPI client in
 [`dexjoco/dexjoco_openpi_client`](../dexjoco/dexjoco_openpi_client) is the
-primary reference for this integration path. The reference code under
-[`docs/reference_code`](reference_code) shows two additional implementation
-patterns: multi-frame observation history and LeRobot `async_inference` reuse.
+reference for this path. The LeRobot reference under
+[`docs/reference_code`](reference_code) illustrates `async_inference` reuse.
+
+For DP/DP3 with the standalone v1.1 environments, use the
+[dexmani_policy guide](dexmani_policy.md). Its proprioception layout and native
+rotvec interface differ from the quaternion wrapper described here.
 
 ## Policy Protocol
 
@@ -83,18 +85,11 @@ policy a smoother transition between successive action plans.
 
 ## Multi-Frame Observation History
 
-Some policies benefit from a short observation window rather than a single
-frame. The reference implementation under
-[`docs/reference_code/dexjoco_dp_eval/dp_dexjoco_env.py`](reference_code/dexjoco_dp_eval/dp_dexjoco_env.py)
-uses a `deque` to maintain a fixed-length history:
-
-- `reset()` seeds the queue with the initial observation
-- `step()` appends the latest observation
-- `get_obs()` stacks the frames along a new history dimension
-
-This keeps history management local to the wrapper and leaves the policy code
-focused on model inference. The same approach can be extended to longer windows
-by increasing the deque length and the stack logic.
+The DP/DP3 path uses `DexJoCoRunner`, which inherits observation history and
+action chunk execution from `dexmani_policy.env_runner.sim_runner.SimRunner`.
+The runner pads initial history with the first observation, updates it after
+each action, and passes the latest `n_obs_steps` frames to the policy.
+See [DP/DP3 training and evaluation](dexmani_policy.md).
 
 ## Reusing `async_inference`
 
@@ -115,31 +110,18 @@ inference API. DexJoCo also needs a rewritten robot client so the background
 observation sender can run as `self._obs_sender_thread` without blocking the
 control loop.
 
-## Why the DP and LeRobot Reference Code Is Not Open-Sourced Yet
-
-The Diffusion Policy and LeRobot paths are kept as reference code because they
-depend on substantial adaptation work:
-
-- the Diffusion Policy training stack requires large changes to support DexJoCo
-  observation and action layouts
-- the LeRobot path requires source changes and monkey patching before it can be
-  used with the DexJoCo simulator
-
-For that reason, the repository exposes the stable DexJoCo and OpenPI
-integration path directly, while the Diffusion Policy and LeRobot material
-remains as reference code for implementation patterns.
+The LeRobot files are integration examples that require client-side adaptation;
+they are not a packaged evaluation entry point.
 
 ## Evaluation Entry Points
 
-Use the OpenPI client for the current evaluation path:
+Use the OpenPI client for server-based evaluation:
 
 - [`dexjoco/dexjoco_openpi_client/dexjoco_openpi_env.py`](../dexjoco/dexjoco_openpi_client/dexjoco_openpi_env.py)
 - [`dexjoco/dexjoco_openpi_client/eval_dexjoco_openpi.py`](../dexjoco/dexjoco_openpi_client/eval_dexjoco_openpi.py)
 - [`configs/rand_obj/*.yaml`](../configs/rand_obj)
 - [`configs/rand_full/*.yaml`](../configs/rand_full)
 
-The reference implementations remain available for studying multi-frame history,
-action chunking, and async inference reuse:
-
-- [`docs/reference_code/dexjoco_dp_eval`](reference_code/dexjoco_dp_eval)
-- [`docs/reference_code/dexjoco_lerobot_client`](reference_code/dexjoco_lerobot_client)
+Use [dexmani_policy](dexmani_policy.md) for DP/DP3 evaluation. The
+[LeRobot reference](reference_code/dexjoco_lerobot_client) illustrates async
+inference integration.

@@ -20,6 +20,11 @@ and ⚙️ **reasoning**, together with a low-cost teleoperation data collection
 system, replayable demonstrations, domain randomization, and OpenPI π0.5 policy
 training/evaluation support.
 
+**dexmani_policy (DP / DP3):** use the existing Conda `policy` environment and
+the [v1.1 training and evaluation guide](docs/dexmani_policy.md). This path uses
+the standalone v1.1 task environments; the OpenPI interfaces and action
+ordering described below belong to the teleoperation/OpenPI workflow.
+
 <table width="100%">
   <tr>
     <td align="center" width="20%">

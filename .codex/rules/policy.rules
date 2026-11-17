@@ -1,0 +1,11 @@
+# The integration tests require host CUDA/EGL access; run from the repository root.
+prefix_rule(
+    pattern = ["bash", "scripts/run_policy.sh", "python", "-m", "pytest", "tests/test_policy_env.py"],
+    decision = "allow",
+    justification = "Run the DexJoCo policy integration tests with host CUDA/EGL access.",
+    match = ["bash scripts/run_policy.sh python -m pytest tests/test_policy_env.py -q"],
+    not_match = [
+        "bash scripts/run_policy.sh python -c 'print(1)'",
+        "bash scripts/run_policy.sh python -m pytest tests/other_test.py -q",
+    ],
+)
