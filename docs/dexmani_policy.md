@@ -74,7 +74,7 @@ bash scripts/run_policy.sh python -m dexmani_policy.train \
   --config-dir "$PWD/configs/dexmani_policy" --config-name "${policy_method}_dexjoco" \
   task_name="$task_name" hydra.run.dir="$run_dir"
 
-bash scripts/run_policy.sh python -m dexmani_policy.training.common.resume \
+bash scripts/run_policy.sh python -m dexmani_policy.training.resume \
   --run "$run_dir"
 ```
 

@@ -12,7 +12,7 @@ from dexjoco.policy_env import DexJoCoEnv, depth_to_point_cloud
 
 
 def test_policy_recipes(monkeypatch):
-    from dexmani_policy.training.common.config import load_config
+    from dexmani_policy.training.config import load_config
 
     root = Path(__file__).resolve().parents[1]
     monkeypatch.chdir(root)
