@@ -146,24 +146,23 @@ class PandaPinchTongsGymEnv(MujocoGymEnv):
             {
                 "state": gym.spaces.Dict(
                     {
-                        "tcp_pose": gym.spaces.Box(-np.inf, np.inf, shape=(7,)),
-                        "gripper_pose": gym.spaces.Box(-1, 1, shape=(1,)),
+                        "tcp_pose": gym.spaces.Box(-np.inf, np.inf, shape=(7,), dtype=np.float64),
+                        "gripper_pose": gym.spaces.Box(-np.inf, np.inf, shape=(_N_ALLEGRO, 1)),
                         "tongs_ori_pose": gym.spaces.Box(
                             -np.inf, np.inf, shape=(7,), dtype=np.float64
                         ),
                         "table_delta_height": gym.spaces.Box(
-                            -np.inf, np.inf, shape=(1,), dtype=np.float64
+                            -np.inf, np.inf, shape=(), dtype=np.float64
                         ),
                     }
                 ),
                 "images": gym.spaces.Dict(
                     {
-                        "wrist": spaces.Box(
-                            0, 255, shape=(image_h, image_w, 3), dtype=np.uint8
-                        ),
-                        "random_camera" if self.randomize else "front": spaces.Box(
-                            0, 255, shape=(image_h, image_w, 3), dtype=np.uint8
-                        ),
+                        name: spaces.Box(0, 255, shape=(image_h, image_w, 3), dtype=np.uint8)
+                        for name in (
+                            "random_camera" if self.randomize else "front",
+                            "ego_left", "ego_right", "wrist",
+                        )
                     }
                 ),
             }

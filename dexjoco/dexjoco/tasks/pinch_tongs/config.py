@@ -1,5 +1,7 @@
 from typing import Literal
 
+from gymnasium import Env
+
 from ...sim.envs.panda_pinch_tongs_env import PandaPinchTongsGymEnv
 from ..config import TaskConfigBase
 from ..obs_adapters import DexjocoObsAdapter
@@ -21,15 +23,11 @@ class TaskConfig(TaskConfigBase):
         randomize=False,
         **kwargs,
     ):
-        env = PandaPinchTongsGymEnv(
+        env: Env = PandaPinchTongsGymEnv(
             render_mode=render_mode, randomize=randomize, hz=30, **kwargs
         )
         if policy_mode:
             env = SingleArmPolicyWrapper(env)
         else:
             env = SingleArmViveHandTeleopWrapper(env, self.teleop)
-        env = DexjocoObsAdapter(env, proprio_keys=self.proprio_keys)
-        return env
-
-    def process_demos(self, demo):
-        return demo
+        return DexjocoObsAdapter(env, proprio_keys=self.proprio_keys)

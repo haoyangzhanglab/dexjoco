@@ -1,56 +1,20 @@
-import logging
 import multiprocessing as mp
-import os
-import sys
 from collections import OrderedDict
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty
-from typing import Any, Literal, cast
 
-import imageio
-import imageio.v3 as iio
 import numpy as np
 import yaml
-import zarr
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
-from zarr import Array, Group
 
-from ..episode_common import find_first_non_static_frame
+from ..episode_common import find_episodes, find_first_non_static_frame
 from ..process_protocol import DoneMsg, ErrorMsg, InitMsg, ProgressBar, ProgressMsg
-from ..utils import dict_to_slice, normalize_array_shape, pad_to_dim, terminate_process
-
-
-def _load_episode_arrays(
-    zarr_path: Path, selected_keys: list[str]
-) -> dict[str, np.ndarray]:
-    """Load selected episode arrays from a replay Zarr store.
-
-    Args:
-        zarr_path: Path to an episode `replay.zarr` directory.
-        selected_keys: Data keys to load from the Zarr `data` group.
-
-    Returns:
-        Mapping from selected key to a normalized `float32` NumPy array.
-    """
-    # Load all arrays from replay.zarr/data group as numpy arrays.
-    root = cast(Group, zarr.open(str(zarr_path), mode="r"))
-    data_group = cast(Group, root["data"])
-
-    episode_data: dict[str, np.ndarray] = {}
-    for key in selected_keys:
-        raw = np.asarray(cast(Array, data_group[key])[:], dtype=np.float32)
-        episode_data[key] = normalize_array_shape(raw)
-    return episode_data
-
-
-@dataclass
-class ProcessVideoMessage:
-    type: Literal["frame", "end"]
-    step: int
-    frame: np.ndarray | None
+from ..utils import dict_to_slice, pad_to_dim, terminate_process
+from .merge_episode_lerobot import (
+    _build_features, _image_size, _load_episode_arrays, _suppress_process_output, _write_episode,
+)
 
 
 @dataclass(frozen=True)
@@ -64,88 +28,6 @@ class DatasetSpec:
     state_key: str
     cam_map: OrderedDict[str, str]  # std cam -> raw cam
     slice_cfg: dict[str, slice]
-
-
-def _process_video_task(
-    video_name: str,  # video_name(include ".mp4")
-    videos_dir: Path,
-    start_idx: int,
-    que: mp.Queue,
-):
-    """Decode one video and stream frames through a multiprocessing queue.
-
-    Args:
-        video_name: Source video file name, including extension.
-        videos_dir: Directory containing source videos.
-        start_idx: Number of leading frames to skip.
-        que: Queue receiving ``ProcessVideoMessage`` frame and end messages.
-
-    Returns:
-        None.
-    """
-    video_path = videos_dir / video_name
-
-    reader = imageio.get_reader(video_path)
-    try:
-        for i, frame in enumerate(reader.iter_data()):
-            if i < start_idx:
-                continue
-            que.put(ProcessVideoMessage(type="frame", step=i - start_idx, frame=frame))
-        que.put(ProcessVideoMessage(type="end", step=i + 1 - start_idx, frame=None))
-    finally:
-        reader.close()
-    return
-
-
-def _build_features(
-    camera_names: list[str],
-    image_size: tuple,
-    action_shape: tuple,
-    state_shape: tuple,
-) -> dict[str, Any]:
-    """Build a LeRobot feature schema for images, action, and state.
-
-    Args:
-        camera_names: Camera names exposed as observation image keys.
-        image_size: Frame size as ``(height, width)``.
-        action_shape: Per-frame action tensor shape.
-        state_shape: Per-frame state tensor shape.
-
-    Returns:
-        Feature specification accepted by ``LeRobotDataset.create``.
-    """
-    features: dict[str, Any] = {}
-
-    for cam_name in camera_names:
-        features[f"{OBS_IMAGES}.{cam_name}"] = {
-            "dtype": "video",
-            "shape": (image_size[0], image_size[1], 3),
-            "names": ["height", "width", "channel"],
-        }
-
-    features.update({
-        ACTION: {"dtype": "float32", "shape": action_shape},
-        OBS_STATE: {"dtype": "float32", "shape": state_shape},
-    })
-
-    return features
-
-
-def _get_episode_dirs(
-    dataset_dir: Path, bad_episodes: list[str] | None = None
-) -> list[Path]:
-    """Return sorted episode directories after excluding configured episodes."""
-    episode_dirs = list(filter(lambda d: d.is_dir(), dataset_dir.iterdir()))
-    episode_dirs.sort(key=lambda x: x.name)
-
-    if bad_episodes is not None:
-        assert set(bad_episodes).issubset(set(d.name for d in episode_dirs)), (
-            "bad_episodes must be a subset of episode directories"
-        )
-        episode_dirs = [d for d in episode_dirs if d.name not in bad_episodes]
-
-    assert len(episode_dirs) > 0, f"No episodes found in {dataset_dir}"
-    return episode_dirs
 
 
 def _build_dataset_specs(
@@ -168,98 +50,34 @@ def _build_dataset_specs(
     )
     standard_cam_names = cam_key_lists[0]
 
-    # confirm constant image size
-    image_sizes = []
-    dataset_episode_dirs: dict[str, list[Path]] = {}
-    for dataset_dir in dataset_dirs:
-        dataset_id = dataset_dir.name
-        bad_episodes = (
-            None if bad_episodes_config is None else bad_episodes_config[dataset_id]
-        )
-        episode_dirs = _get_episode_dirs(dataset_dir, bad_episodes=bad_episodes)
-        dataset_episode_dirs[dataset_id] = episode_dirs
-
-        first_episode_videos = sorted(
-            (episode_dirs[0] / "videos").iterdir(), key=lambda x: x.name
-        )
-        for video in first_episode_videos:
-            props = iio.improps(video, index=0)
-            current_image_size = tuple(props.shape[:2])
-            if current_image_size[0] != current_image_size[1]:
-                logging.warning(
-                    f"Non-square frames detected in {video}: {current_image_size}"
-                )
-            image_sizes.append(current_image_size)
-
-    assert len(image_sizes) > 0, "No video found"
-    assert all(size == image_sizes[0] for size in image_sizes), (
-        f"Image size mismatch: {image_sizes}"
-    )
-    image_size = image_sizes[0]
-
+    image_sizes = set()
     for dataset_dir in dataset_dirs:
         dataset_id = dataset_dir.name
         selected_data = selected_data_config[dataset_id]
-        selected_action_key: str = selected_data["action"]
-        selected_state_key: str = selected_data["state"]
-        selected_cam_map: OrderedDict[str, str] = OrderedDict(selected_data["cameras"])
-        selected_raw_cams = list(set(selected_cam_map.values()))
-
-        episode_dirs = dataset_episode_dirs[dataset_id]
-
-        first_episode_videos = sorted(
-            (episode_dirs[0] / "videos").iterdir(), key=lambda x: x.name
+        selected_cam_map = OrderedDict(selected_data["cameras"])
+        bad_episodes = (
+            None if bad_episodes_config is None else bad_episodes_config[dataset_id]
         )
-        available_video_stems = set(v.stem for v in first_episode_videos)
-        assert set(selected_raw_cams).issubset(available_video_stems), (
-            f"Selected cameras must be a subset of available videos: {dataset_id}"
-        )
+        episode_dirs = find_episodes(dataset_dir, bad_episodes)
+        image_sizes.add(_image_size(episode_dirs[0] / "videos", set(selected_cam_map.values())))
 
         dataset_specs.append(
             DatasetSpec(
                 dataset_id=dataset_id,
                 episode_dirs=episode_dirs,
                 instruction=language_instruction_config[dataset_id],
-                action_key=selected_action_key,
-                state_key=selected_state_key,
+                action_key=selected_data["action"],
+                state_key=selected_data["state"],
                 cam_map=selected_cam_map,
                 slice_cfg=slice_config[dataset_id],
             )
         )
         total_episodes += len(episode_dirs)
 
+    if len(image_sizes) != 1:
+        raise ValueError(f"Expected one image size across datasets, got {sorted(image_sizes)}")
+    image_size = image_sizes.pop()
     return dataset_specs, standard_cam_names, image_size, total_episodes
-
-
-@contextmanager
-def _suppress_process_output():
-    """Temporarily redirect process stdout and stderr to ``os.devnull``.
-
-    Args:
-        None.
-
-    Yields:
-        None while stdout and stderr are suppressed.
-    """
-    stdout = sys.stdout
-    stderr = sys.stderr
-    saved_stdout_fd = os.dup(1)
-    saved_stderr_fd = os.dup(2)
-    devnull = open(os.devnull, "w")
-    try:
-        sys.stdout = devnull
-        sys.stderr = devnull
-        os.dup2(devnull.fileno(), 1)
-        os.dup2(devnull.fileno(), 2)
-        yield
-    finally:
-        os.dup2(saved_stdout_fd, 1)
-        os.dup2(saved_stderr_fd, 2)
-        os.close(saved_stdout_fd)
-        os.close(saved_stderr_fd)
-        sys.stdout = stdout
-        sys.stderr = stderr
-        devnull.close()
 
 
 def merge_datasets_worker(
@@ -377,129 +195,73 @@ def _merge_datasets_worker_impl(
         message_queue.put(ErrorMsg(dataset_name=dataset_name, error=str(e)))
         raise
 
-    video_queues = None
-    video_processes = None
     total_steps = 0
     total_truncated_frames = 0
-    for spec in dataset_specs:
-        selected_action_key = spec.action_key
-        selected_state_key = spec.state_key
-        selected_cam_map = spec.cam_map
-        # 1 raw cam may be mapped to multiple std cams
-        selected_raw_cams = set(selected_cam_map.values())
-        slice_cfg = spec.slice_cfg
+    try:
+        for spec in dataset_specs:
+            selected_action_key = spec.action_key
+            selected_state_key = spec.state_key
+            selected_cam_map = spec.cam_map
+            slice_cfg = spec.slice_cfg
 
-        for ep_dir in spec.episode_dirs:
-            try:
-                zarr_file = ep_dir / "replay.zarr"
-                videos_dir = ep_dir / "videos"
+            for ep_dir in spec.episode_dirs:
+                try:
+                    zarr_file = ep_dir / "replay.zarr"
+                    videos_dir = ep_dir / "videos"
 
-                episode_data = _load_episode_arrays(
-                    zarr_file,
-                    selected_keys=[selected_action_key, selected_state_key],
-                )
-                n_steps = episode_data[selected_action_key].shape[0]
-                if skip_static_frames:
-                    start_idx = find_first_non_static_frame(
-                        episode_data[selected_action_key]
+                    episode_data = _load_episode_arrays(
+                        zarr_file,
+                        selected_keys=[selected_action_key, selected_state_key],
                     )
-                    if start_idx < n_steps and np.all(
-                        episode_data[selected_action_key][start_idx] == 0
-                    ):
-                        start_idx += 1
-                    total_truncated_frames += start_idx
-                    for key in episode_data:
-                        episode_data[key] = episode_data[key][start_idx:]
-                    n_steps -= start_idx
-                else:
-                    start_idx = 0
-
-                for k, v in slice_cfg.items():
-                    episode_data[k] = episode_data[k][:, v]
-                # Enforce a fixed action/state schema across mixed datasets by right-padding with zeros.
-                episode_data[selected_action_key] = pad_to_dim(
-                    episode_data[selected_action_key], target_action_dim
-                )
-                episode_data[selected_state_key] = pad_to_dim(
-                    episode_data[selected_state_key], target_state_dim
-                )
-
-                video_queues = {raw_cam: mp.Queue() for raw_cam in selected_raw_cams}
-                video_processes = {
-                    raw_cam: mp.Process(
-                        target=_process_video_task,
-                        args=(
-                            f"{raw_cam}.mp4",
-                            videos_dir,
-                            start_idx,
-                            video_queues[raw_cam],
-                        ),
-                    )
-                    for raw_cam in selected_raw_cams
-                }
-                for p in video_processes.values():
-                    p.start()
-
-                for t in range(n_steps):
-                    frame_data: dict[str, Any] = {"task": spec.instruction}
-                    frame_data[ACTION] = episode_data[selected_action_key][t]
-                    frame_data[OBS_STATE] = episode_data[selected_state_key][t]
-                    raw_video_frame: dict = {}
-                    for raw_cam in selected_raw_cams:
-                        try:
-                            video_msg: ProcessVideoMessage = video_queues[raw_cam].get(
-                                timeout=30.0
-                            )
-                        except Empty:
-                            if not video_processes[raw_cam].is_alive():
-                                raise Exception(f"decoder process died: {raw_cam}")
-                            raise Exception(
-                                f"waiting frame timeout: {raw_cam}, step={t}"
-                            )
-                        assert video_msg.type == "frame" and video_msg.step == t, (
-                            "Video processing out of sync"
+                    n_steps = episode_data[selected_action_key].shape[0]
+                    if skip_static_frames:
+                        start_idx = find_first_non_static_frame(
+                            episode_data[selected_action_key]
                         )
-                        raw_video_frame[raw_cam] = video_msg.frame
-                    for std_cam, raw_cam in selected_cam_map.items():
-                        frame_data[f"{OBS_IMAGES}.{std_cam}"] = raw_video_frame[raw_cam]
-                    dataset.add_frame(frame_data)
-                dataset.save_episode()
-                total_steps += n_steps
+                        if start_idx < n_steps and np.all(
+                            episode_data[selected_action_key][start_idx] == 0
+                        ):
+                            start_idx += 1
+                        total_truncated_frames += start_idx
+                        for key in episode_data:
+                            episode_data[key] = episode_data[key][start_idx:]
+                        n_steps -= start_idx
+                    else:
+                        start_idx = 0
 
-                for p in video_processes.values():
-                    p.join(timeout=10.0)
-                    assert not p.is_alive(), "Video processing did not finish properly"
-                for raw_cam in selected_raw_cams:
-                    video_msg = video_queues[raw_cam].get(timeout=10.0)
-                    assert video_msg.type == "end" and video_msg.step == n_steps, (
-                        "Video processing did not end properly"
+                    for k, v in slice_cfg.items():
+                        episode_data[k] = episode_data[k][:, v]
+                    # Enforce a fixed action/state schema across mixed datasets by right-padding with zeros.
+                    episode_data[selected_action_key] = pad_to_dim(
+                        episode_data[selected_action_key], target_action_dim
                     )
-                    video_queues[raw_cam].close()
+                    episode_data[selected_state_key] = pad_to_dim(
+                        episode_data[selected_state_key], target_state_dim
+                    )
 
-                message_queue.put(
-                    ProgressMsg(
-                        dataset_name=dataset_name,
-                        episode_name=f"{spec.dataset_id}/{ep_dir.name}",
+                    _write_episode(
+                        dataset, videos_dir, episode_data[selected_action_key], episode_data[selected_state_key],
+                        selected_cam_map, spec.instruction, start_idx,
                     )
-                )
-            except Exception as e:
-                message_queue.put(
-                    ErrorMsg(
-                        dataset_name=dataset_name,
-                        error=str(e),
-                        episode_name=f"{spec.dataset_id}/{ep_dir.name}",
+                    total_steps += n_steps
+
+                    message_queue.put(
+                        ProgressMsg(
+                            dataset_name=dataset_name,
+                            episode_name=f"{spec.dataset_id}/{ep_dir.name}",
+                        )
                     )
-                )
-                if video_processes is not None:
-                    for p in video_processes.values():
-                        if p.is_alive():
-                            p.terminate()
-                        p.join(timeout=1.0)
-                if video_queues is not None:
-                    for q in video_queues.values():
-                        q.cancel_join_thread()
-                        q.close()
-                raise
+                except Exception as e:
+                    message_queue.put(
+                        ErrorMsg(
+                            dataset_name=dataset_name,
+                            error=str(e),
+                            episode_name=f"{spec.dataset_id}/{ep_dir.name}",
+                        )
+                    )
+                    raise
+    finally:
+        dataset.finalize()
 
     statistics_msg = (
         f"Output directory: {output_dir}\n"

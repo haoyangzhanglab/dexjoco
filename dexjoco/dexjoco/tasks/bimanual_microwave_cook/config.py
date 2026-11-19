@@ -1,5 +1,7 @@
 from typing import Literal
 
+from gymnasium import Env
+
 from ...sim.envs.panda_bimanual_microwave_cook_env import (
     PandaBimanualMicrowaveCookGymEnv,
 )
@@ -29,15 +31,11 @@ class TaskConfig(TaskConfigBase):
         randomize=False,
         **kwargs,
     ):
-        env = PandaBimanualMicrowaveCookGymEnv(
+        env: Env = PandaBimanualMicrowaveCookGymEnv(
             render_mode=render_mode, randomize=randomize, hz=30, **kwargs
         )
         if policy_mode:
             env = DualArmPolicyWrapper(env)
         else:
             env = DualArmViveHandTeleopWrapper(env, self.teleop)
-        env = DexjocoObsAdapter(env, proprio_keys=self.proprio_keys)
-        return env
-
-    def process_demos(self, demo):
-        return demo
+        return DexjocoObsAdapter(env, proprio_keys=self.proprio_keys)

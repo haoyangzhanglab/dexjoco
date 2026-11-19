@@ -15,7 +15,7 @@ DexJoCo provides MuJoCo tasks, demonstration utilities and policy interfaces.
 
 Use the existing Conda `policy` environment through `bash scripts/run_policy.sh ...`.
 The [dexmani_policy guide](../docs/dexmani_policy.md) is the reference for installation,
-quick smoke checks, full-data conversion, training, resume and evaluation.
+single-episode replay checks, full-data conversion, training, resume and evaluation.
 
 The standalone task interface is Gymnasium:
 

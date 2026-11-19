@@ -23,7 +23,7 @@ Supported workflows:
 
 ## Installation
 
-Install the converter with the provided setup script:
+Run the setup script from the repository root.
 
 ```bash
 bash dexjoco-data-converter/install.bash
@@ -85,6 +85,10 @@ converted_datasets/
 
 LeRobot outputs follow the LeRobot dataset layout. Zarr outputs contain a merged
 `replay_buffer.zarr` store and a `videos/` directory.
+
+LeRobot outputs use the 30 fps dataset convention in the published DexJoCo
+LeRobot datasets. Conversion pairs one RGB frame with each recorded action,
+without resampling by MP4 playback rate. The simulator control period is 0.02 s.
 
 ## Configuration Files
 
@@ -316,18 +320,18 @@ The single-dataset and batch Zarr commands do not take `selected_data`:
 - `dexjoco-dc-single-zarr`
 - `dexjoco-dc-batch-zarr`
 
-These commands preserve the raw episode arrays from `replay.zarr` with minimal
-normalization. If an episode contains `action_rotvec`, it is renamed to
-`action`; otherwise the existing `action` key is used. The `state` key is used
-directly. The `slice_yaml` or `slice_config.yaml` rules are applied to the
-resulting array keys, such as `action` or `state`.
+These commands read `action_rotvec` from each `replay.zarr` and store it as
+`action`. They preserve the `state` array and apply the `slice_yaml` or
+`slice_config.yaml` rules to the resulting array keys, such as `action` and
+`state`.
 
 For videos, these commands do not select or rename cameras through
-`selected_data`. They enumerate the video files from the first episode, copy or
-trim all listed videos for each episode, and write numeric output video names
+`selected_data`. They enumerate RGB `.mp4` files from the first episode, copy or
+trim those videos for each episode, and write numeric output video names
 such as `0.mp4`, `1.mp4`, and `2.mp4`. The generated `video_name_map.yaml`
 records the mapping from raw video file names to numeric output names in the
-output dataset directory.
+output dataset directory. The `*_depth.mp4` previews and depth archives are
+excluded from conversion.
 
 The multi-task Zarr command, `dexjoco-dc-merge-zarr`, does take `selected_data`.
 It uses the selected action/state keys, enforces a shared camera schema across
@@ -436,47 +440,14 @@ my_task:
     wrist: wrist
 ```
 
-## Validation
-
-Check raw episode consistency for all datasets in a root directory:
-
-```bash
-python dexjoco-data-converter/scripts/check_dataset_consistency.py \
-    --input-root ./datasets/raw/dexjoco_raw_datasets
-```
-
-The script is
-[`dexjoco-data-converter/scripts/check_dataset_consistency.py`](./scripts/check_dataset_consistency.py).
-
-Print the structure of one raw episode:
-
-```bash
-python dexjoco-data-converter/scripts/print_episode_structure.py \
-    --dataset-path ./datasets/raw/dexjoco_raw_datasets/water_plant \
-    --episode-index 0
-```
-
-The script is
-[`dexjoco-data-converter/scripts/print_episode_structure.py`](./scripts/print_episode_structure.py).
-
-Check LeRobot datasets under a root directory:
-
-```bash
-python dexjoco-data-converter/scripts/check_lerobot_datasets.py \
-    --input-root ./converted_datasets/lerobot/rand_full
-```
-
-The script is
-[`dexjoco-data-converter/scripts/check_lerobot_datasets.py`](./scripts/check_lerobot_datasets.py).
-
 ## Implementation Notes
 
 ### Processing Pipeline
 
-The converter loads action and state arrays from `replay.zarr`, normalizes array
-shapes, removes static leading frames when requested, applies the configured
-slices, and writes the result to the selected target format. LeRobot conversion
-also writes task instructions into the LeRobot dataset schema.
+The converter discovers episode folders by their `replay.zarr` stores. It
+loads action and state arrays, normalizes array shapes, removes static leading
+frames when requested, and applies the configured slices. LeRobot conversion
+also writes task instructions into the dataset schema.
 
 In multi-task merge, the converter applies per-dataset key selection and
 slicing, then pads action and state arrays to `--target-action-dim` and
@@ -489,16 +460,10 @@ parallel. The main process builds dataset jobs from configuration files,
 receives progress messages from workers, and reports dataset-level completion or
 failure.
 
-LeRobot episode conversion also uses separate video decoder processes. Each
-decoder reads one raw camera video and streams decoded frames through a
-multiprocessing queue. The main conversion loop receives one frame per selected
-camera at each timestep, verifies frame synchronization, builds a LeRobot
-`frame_data` dictionary, and calls `dataset.add_frame(frame_data)`.
-
-This design allows video decoding and LeRobot video encoding to proceed at the
-same time: decoder processes read and decode source videos while the main
-conversion process adds frames to the LeRobot dataset, where the output video
-writer performs encoding.
+LeRobot conversion streams the configured camera MP4 files through FFmpeg.
+It decodes each raw camera once, even if multiple output camera keys use it.
+The conversion loop reads camera frames, actions, and states together and
+requires equal lengths before saving the episode.
 
 ### Video Trimming
 
@@ -506,8 +471,9 @@ Zarr conversion preserves the external video files used by the raw dataset. When
 static leading frames are skipped,
 [`trim_video`](./src/dexjoco_data_converter/to_zarr/merge_episode_zarr.py) opens
 an `imageio` reader for the source video and an `imageio` writer for the
-destination video. The function iterates through decoded frames, skips frames
-before `start_frame`, and appends the remaining frames to the writer.
+destination video with the source FPS, codec, and frame dimensions. The
+function skips frames before `start_frame` and appends the remaining frames
+to the writer.
 
 The reader and writer are active in the same loop, so video decoding and
 encoding are performed as a streaming operation instead of loading the full

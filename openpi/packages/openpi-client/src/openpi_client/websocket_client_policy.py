@@ -56,3 +56,6 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
     @override
     def reset(self) -> None:
         pass
+
+    def close(self) -> None:
+        self._ws.close()

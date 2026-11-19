@@ -11,7 +11,7 @@ import yaml
 import zarr
 from diffusion_policy.common.replay_buffer import ReplayBuffer  # type: ignore
 
-from ..episode_common import find_first_non_static_frame
+from ..episode_common import find_episodes, find_first_non_static_frame
 from ..process_protocol import DoneMsg, ErrorMsg, InitMsg, ProgressBar, ProgressMsg
 from ..utils import dict_to_slice, normalize_array_shape, pad_to_dim, terminate_process
 from .merge_episode_zarr import _process_video_task
@@ -61,23 +61,6 @@ def _save_video_name_map(
     return
 
 
-def _get_episode_dirs(
-    dataset_dir: Path, bad_episodes: list[str] | None = None
-) -> list[Path]:
-    """Return sorted episode directories after excluding configured episodes."""
-    episode_dirs = list(filter(lambda d: d.is_dir(), dataset_dir.iterdir()))
-    episode_dirs.sort(key=lambda x: x.name)
-
-    if bad_episodes is not None:
-        assert set(bad_episodes).issubset(set(d.name for d in episode_dirs)), (
-            "bad_episodes must be a subset of episode directories"
-        )
-        episode_dirs = [d for d in episode_dirs if d.name not in bad_episodes]
-
-    assert len(episode_dirs) > 0, f"No episodes found in {dataset_dir}"
-    return episode_dirs
-
-
 def _build_dataset_specs(
     dataset_dirs: list[Path],
     selected_data_config: dict[str, dict],
@@ -109,12 +92,12 @@ def _build_dataset_specs(
         bad_episodes = (
             None if bad_episodes_config is None else bad_episodes_config[dataset_id]
         )
-        episode_dirs = _get_episode_dirs(dataset_dir, bad_episodes=bad_episodes)
+        episode_dirs = find_episodes(dataset_dir, bad_episodes)
 
-        first_episode_videos = sorted(
-            (episode_dirs[0] / "videos").iterdir(), key=lambda x: x.name
-        )
-        available_video_stems = set(v.stem for v in first_episode_videos)
+        available_video_stems = {
+            path.stem for path in (episode_dirs[0] / "videos").glob("*.mp4")
+            if path.is_file()
+        }
         assert set(selected_raw_cams).issubset(available_video_stems), (
             f"Selected cameras must be a subset of available videos: {dataset_id}"
         )
@@ -139,9 +122,6 @@ def _normalize_selected_keys(
     """Normalize configured action and state keys to the merged Zarr schema."""
     if action_key != "action":
         episode_data["action"] = episode_data.pop(action_key)
-    elif "action_rotvec" in episode_data:
-        episode_data["action"] = episode_data.pop("action_rotvec")
-
     if state_key != "state":
         episode_data["state"] = episode_data.pop(state_key)
 

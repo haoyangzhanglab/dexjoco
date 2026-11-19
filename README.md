@@ -81,6 +81,7 @@ ordering described below belong to the teleoperation/OpenPI workflow.
 
 ## Table of Contents
 
+- [Project Layout](#project-layout)
 - [Installation](#-installation)
 - [Policy Evaluation](#-policy-evaluation)
 - [Custom Policy Integration](#-custom-policy-integration)
@@ -92,6 +93,17 @@ ordering described below belong to the teleoperation/OpenPI workflow.
 - [Headless Rendering](#headless-rendering)
 - [License](#-license)
 - [Citation](#-citation)
+
+## Project Layout
+
+- Simulation environments and the OpenPI evaluation client are in [`dexjoco/`](dexjoco/).
+- Demonstration recording and replay scripts are in [`scripts/demos/`](scripts/demos/). Hardware setup and bridges are in [`teleoperation/`](teleoperation/).
+- OpenPI training and serving code is in [`openpi/`](openpi/).
+- Task and evaluation settings are in [`configs/`](configs/).
+- The raw demonstration conversion toolkit is in [`dexjoco-data-converter/`](dexjoco-data-converter/).
+- Integration guides are in [`docs/`](docs/).
+
+DP/DP3 datasets and run results are stored locally under `datasets/` and `outputs/`.
 
 ## 🚀 Installation
 
@@ -116,14 +128,15 @@ Download model checkpoints from
 [DexJoCo-Pi05](https://huggingface.co/DexJoCo/DexJoCo-Pi05) or train them
 yourself before evaluation.
 
-Start an OpenPI policy server from the `openpi` environment:
+Keep the downloaded checkpoint paths under `checkpoints/`. Start the server in
+the `openpi` environment.
 
 ```bash
 cd openpi
 conda activate openpi
 python scripts/serve_policy.py --port=8000 policy:checkpoint \
   --policy.config water_plant \
-  --policy.dir ../checkpoints/pi05_ckpts/water_plant/<exp_name>/<step>
+  --policy.dir ../checkpoints/pi05_dexjoco_ckpt/water_plant
 ```
 
 Run evaluation from the repository root in the `dexjoco` environment:
@@ -136,8 +149,10 @@ dexjoco-openpi-eval \
   --port=8000
 ```
 
-For `rand_full` evaluation, use a config under `configs/rand_full/` and pass
-`--rand-full`:
+For `rand_full` evaluation, start the server with `--policy.config
+water_plant_rand_full` and `--policy.dir
+../checkpoints/pi05_dexjoco_rand_full_ckpt/water_plant`. Use the corresponding
+evaluation YAML and `--rand-full` on the client.
 
 ```bash
 dexjoco-openpi-eval \
@@ -146,10 +161,6 @@ dexjoco-openpi-eval \
   --port=8000 \
   --rand-full
 ```
-
-Convenience launch templates are available at
-[`scripts/serve_pi05.bash`](scripts/serve_pi05.bash) and
-[`scripts/evaluate_pi05.bash`](scripts/evaluate_pi05.bash).
 
 `dexjoco-openpi-eval` options:
 
@@ -160,13 +171,13 @@ Convenience launch templates are available at
 | `--rand-full`                     | `False`        | Enables the `rand_full` evaluation regime.                         |
 | `--randomize-dynamics`            | `False`        | Enables dynamics randomization.                                    |
 | `--port INT`                      | `8000`         | OpenPI websocket policy server port.                               |
+| `--replan-ratio FLOAT`            | `0.8`          | Request a new chunk when the buffer falls below this fraction of the last response's action count. Accepts values in `(0, 1]`. |
 | `--output PATH`                   | Auto-generated | Output directory for videos and success-rate marker files.         |
 | `--render-mode {rgb_array,human}` | `rgb_array`    | DexJoCo rendering mode. `rgb_array` is headless.                   |
 | `--episodes INT`                  | `50`           | Number of evaluation episodes to run.                              |
 
-See
-[`dexjoco/dexjoco_openpi_client/eval_dexjoco_openpi.py`](dexjoco/dexjoco_openpi_client/eval_dexjoco_openpi.py)
-for the complete option set.
+Run `dexjoco-openpi-eval --help` for the complete option set.
+[OpenPI evaluation CLI](dexjoco/dexjoco_openpi_client/cli/evaluate.py)
 
 ## 🔌 Custom Policy Integration
 
@@ -215,14 +226,11 @@ Supported tasks:
 | Fold glasses   | Single-arm | `fold_glasses`            |
 | Water plant    | Single-arm | `water_plant`             |
 
-TODO: how to add new tasks?
-
-Start demonstration recording from the repository root with
-[`scripts/record_demos_zarr.py`](scripts/record_demos_zarr.py):
+Start demonstration recording from the repository root.
 
 ```bash
 conda activate dexjoco
-python scripts/record_demos_zarr.py \
+python scripts/demos/record_demos_zarr.py \
   --exp_name=water_plant \
   --successes_needed=20 \
   --randomize=True \
@@ -242,23 +250,24 @@ Common `record_demos_zarr.py` options:
 | `--randomize`        | Enables the `rand_full` visual randomization regime used for data collection. |
 | `--show_sim_cameras` | Displays camera streams during interactive collection.                        |
 | `--save_depth`       | Saves depth arrays and depth videos alongside RGB videos.                     |
+| `--video_fps`        | Sets MP4 playback speed in frames per second.                                |
 | `--out_dir`          | Selects the output directory for collected demos.                             |
 
-[`scripts/record_demos_zarr.py`](scripts/record_demos_zarr.py) supports
-`--camera_screen_effect` to display a camera viewfinder overlay, defaults to
-`False`.
+Use `--camera_screen_effect` for the live display on the camera in
+`bimanual_photograph`, or `--ipad_screen_effect` for the unlock transition in
+`bimanual_unlock_ipad`. Both flags default to `False`.
+[`scripts/demos/record_demos_zarr.py`](scripts/demos/record_demos_zarr.py)
 
 ## 🎬 Demonstration Replay
 
 Raw DexJoCo datasets for replay are available from
 [`DexJoCo/DexJoCo-Datasets-Raw`](https://huggingface.co/datasets/DexJoCo/DexJoCo-Datasets-Raw).
 
-Replay recorded demonstrations with
-[`scripts/replay_demos_zarr.py`](scripts/replay_demos_zarr.py):
+Replay recorded demonstrations from the repository root.
 
 ```bash
 conda activate dexjoco
-python scripts/replay_demos_zarr.py \
+python scripts/demos/replay_demos_zarr.py \
   --exp_name=water_plant \
   --input_dir=./demos \
   --out_dir=./replay_output \
@@ -266,9 +275,10 @@ python scripts/replay_demos_zarr.py \
   --restore_state=True
 ```
 
-Replay runs through the policy interface, can restore recorded initial object
-poses and table height, and can generate `rand_full` visual variants through
-camera, lighting, and table texture randomization.
+Replay sends the recorded quaternion actions directly to the simulator until
+success, termination, truncation, or the end of the recording. It restores the
+initial scene from `state[0]` by default and can generate `rand_full` visual
+variants through camera, lighting, and table texture randomization.
 
 Common `replay_demos_zarr.py` options:
 
@@ -279,14 +289,14 @@ Common `replay_demos_zarr.py` options:
 | `--out_dir`    | `./replay_output` | Output directory for replayed Zarr episodes and videos.                                                 |
 | `--randomize`  | `True`            | Enables replay-time `rand_full` visual randomization with preset camera, lighting, and texture changes. |
 | `--seed`       | `0`               | Base replay seed; the demo index is added for each input demo.                                          |
+| `--restore_state` | `True`         | Requires the recorded state to restore the initial scene. Use `--norestore_state` for a fresh scene.   |
+| `--save_failed` | `False`          | Keeps output for replays that do not report success.                                                   |
 | `--save_depth` | `False`           | Saves depth arrays and depth videos alongside RGB replay videos.                                        |
+| `--video_fps` | `30`              | Sets MP4 playback speed in frames per second.                                                           |
 
-See [`scripts/replay_demos_zarr.py`](scripts/replay_demos_zarr.py) for the
-complete option set.
-
-[`scripts/replay_demos_zarr.py`](scripts/replay_demos_zarr.py) supports
-`--camera_screen_effect` to display a camera viewfinder overlay, defaults to
-`False`.
+Replay accepts the same task-specific screen-effect flags as recording.
+See the script for all supported options.
+[`scripts/demos/replay_demos_zarr.py`](scripts/demos/replay_demos_zarr.py)
 
 <a id="data-format"></a>
 
@@ -302,16 +312,18 @@ Each successful demonstration is written as:
   videos/<camera_key>_depth.mp4
 ```
 
-Depth outputs are present when `--save_depth=True`.
+Depth outputs are present when `--save_depth=True`. The NPZ stores camera-axis
+depth in metres as float32, with `inf` for pixels on the far clipping plane.
+The MP4 is a grayscale preview.
 
 The Zarr replay buffer stores low-dimensional episode data:
 
 | Field           | Description                                                                                     |
 | --------------- | ----------------------------------------------------------------------------------------------- |
-| `action`        | Recorded policy or teleoperation actions.                                                       |
-| `action_rotvec` | Action representation with orientation stored as rotation vectors when conversion is available. |
-| `timestamp`     | Per-step timestamps derived from `--data_fps`.                                                  |
-| `state`         | Proprioceptive and task state used by replay and state restoration when available.              |
+| `action`        | Recorded float64 actions with wxyz quaternions.                        |
+| `action_rotvec` | The same actions with orientations stored as rotation vectors.         |
+| `timestamp`     | Seconds from the first frame, using the simulator's 0.02 s control step. |
+| `state`         | Proprioception and task state captured before each action.              |
 
 ### Policy Training Action and State Layout
 

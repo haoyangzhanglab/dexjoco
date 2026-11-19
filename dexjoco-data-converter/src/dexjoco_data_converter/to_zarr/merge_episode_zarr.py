@@ -4,15 +4,16 @@ from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from pathlib import Path
 from queue import Empty
-from typing import Any
+from typing import Any, cast
 
-import imageio
+import imageio.v2 as imageio
 import numpy as np
 import yaml
 import zarr
 from diffusion_policy.common.replay_buffer import ReplayBuffer  # type: ignore
+from imageio.core.format import Format
 
-from ..episode_common import find_first_non_static_frame
+from ..episode_common import find_episodes, find_first_non_static_frame
 from ..process_protocol import DoneMsg, ErrorMsg, InitMsg, ProgressBar, ProgressMsg
 from ..utils import dict_to_slice, normalize_array_shape, terminate_process
 
@@ -28,17 +29,16 @@ def trim_video(input_path: Path, output_path: Path, start_frame: int):
     Returns:
         None.
     """
-    reader = imageio.get_reader(input_path)
-    meta = reader.get_meta_data()
-    fps = meta.get("fps", 30)
-    codec = meta.get("codec", "libx264")
-
-    with imageio.get_writer(output_path, fps=fps, codec=codec) as writer:
-        for i, frame in enumerate(reader.iter_data()):
-            if i < start_frame:
-                continue
-            writer.append_data(frame)  # type: ignore
-    reader.close()
+    reader = cast(Format.Reader, imageio.get_reader(input_path))
+    with reader:
+        meta = reader.get_meta_data()
+        writer = cast(Format.Writer, imageio.get_writer(
+            output_path, fps=meta["fps"], codec=meta["codec"], macro_block_size=1,
+        ))
+        with writer:
+            for i, frame in enumerate(reader.iter_data()):
+                if i >= start_frame:
+                    writer.append_data(frame)
 
 
 def _process_video_task(
@@ -85,25 +85,19 @@ def merge_episode_worker(
         skip_static_frames: Whether to remove static leading frames from each episode.
     """
     try:
-        # Find all episode directories
-        episode_dirs = list(filter(lambda d: d.is_dir(), input_dir.iterdir()))
-        episode_dirs.sort(key=lambda x: x.name)
-
-        if bad_episodes is not None:
-            assert set(bad_episodes).issubset(set(d.name for d in episode_dirs)), (
-                "bad_episodes must be a subset of episode directories"
-            )
-            episode_dirs = [d for d in episode_dirs if d.name not in bad_episodes]
+        episode_dirs = find_episodes(input_dir, bad_episodes)
 
         # create progress bar
         message_queue.put(
             InitMsg(dataset_name=dataset_name, total_episodes=len(episode_dirs))
         )
 
-        # make video_name_map from first episode
-        first_episode_videos = (episode_dirs[0] / "videos").iterdir()
-        first_episode_videos = sorted(first_episode_videos, key=lambda x: x.name)
-        # map video name (xxx.mp4) to idx (0.mp4)
+        first_episode_videos = sorted(
+            path for path in (episode_dirs[0] / "videos").glob("*.mp4")
+            if path.is_file() and not path.stem.endswith("_depth")
+        )
+        if not first_episode_videos:
+            raise ValueError(f"No RGB videos found in {episode_dirs[0]}")
         video_name_map = {
             video.name: f"{idx}.mp4" for idx, video in enumerate(first_episode_videos)
         }
@@ -138,9 +132,7 @@ def merge_episode_worker(
                 episode_data = ep_buffer.get_episode(0, copy=True)
                 for k, v in episode_data.items():
                     episode_data[k] = normalize_array_shape(v)
-                if "action_rotvec" in episode_data:
-                    # we use rotvec to train
-                    episode_data["action"] = episode_data.pop("action_rotvec")
+                episode_data["action"] = episode_data.pop("action_rotvec")
                 n_steps: int = ep_buffer.n_steps
 
                 if skip_static_frames:
@@ -223,7 +215,7 @@ def merge_episode(
 
     dataset_name = input.name
 
-    que = mp.Queue()
+    que: mp.Queue = mp.Queue()
     worker = mp.Process(
         target=merge_episode_worker,
         kwargs={

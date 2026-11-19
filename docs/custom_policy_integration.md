@@ -47,41 +47,28 @@ DexJoCo policy actions use rotation vectors for end-effector orientation:
 - dual-arm policy action: 44 dimensions
   - `[r_xyz(3), r_rotvec(3), r_hand(16), l_xyz(3), l_rotvec(3), l_hand(16)]`
 
-The simulator executes quaternion pose formats internally:
+The policy-mode environment accepts wxyz quaternion actions:
 
 - single-arm environment action: 23 dimensions
   - `[xyz(3), quat(4), hand(16)]`
 - dual-arm environment action: 46 dimensions
   - `[r_xyz(3), r_quat(4), l_xyz(3), l_quat(4), r_hand(16), l_hand(16)]`
 
-The conversion boundary is therefore the policy wrapper. The policy should emit
-rotvec actions; the environment wrapper should convert them to quaternions
-before `env.step()`.
+The OpenPI client converts predicted rotation vectors to wxyz quaternions and
+reorders the bimanual action before calling `env.step()`. The task's action
+wrapper then splits that array into a right-arm block and a left-arm block.
+Recorded demonstrations store those raw arm blocks as `[r_pose7, r_hand16,
+l_pose7, l_hand16]`.
 
 ## Action Chunks
 
-OpenPI evaluation is the main reference for chunked action execution. The policy
-server returns a horizon of actions, and the DexJoCo client executes the buffer
-while requesting the next plan before the buffer runs dry.
-
-1. send the latest observation to inference
-2. receive an action chunk
-3. execute the buffered actions in timestamp order
-4. request a new chunk before the buffer is exhausted
-
-The OpenPI client under
-[`dexjoco/dexjoco_openpi_client/eval_dexjoco_openpi.py`](../dexjoco/dexjoco_openpi_client/eval_dexjoco_openpi.py)
-implements this loop directly.
-
-The important parts are:
-
-- action chunks are aligned to observation timestamps
-- buffered actions are executed before requesting new inference
-- overlapping chunks are blended in the overlap window
-- replan is triggered when the buffered horizon drops below a threshold
-
-This pattern avoids blocking the control loop on inference latency and gives the
-policy a smoother transition between successive action plans.
+The OpenPI client waits for the first action chunk before advancing the rollout.
+It aligns later chunks to their observation's control step and blends overlapping
+actions. It requests a new chunk when the buffer length drops below the length
+of the latest response multiplied by `--replan-ratio`, with one request in flight
+at a time. Set `--replan-ratio` in `(0, 1]`. During gaps between chunks, the
+simulator steps while holding the pose measured at the start of the gap.
+[OpenPI evaluation loop](../dexjoco/dexjoco_openpi_client/eval_dexjoco_openpi.py)
 
 ## Multi-Frame Observation History
 
@@ -115,10 +102,10 @@ they are not a packaged evaluation entry point.
 
 ## Evaluation Entry Points
 
-Use the OpenPI client for server-based evaluation:
+Use `dexjoco-openpi-eval` for server-based evaluation.
 
+- [OpenPI evaluation CLI](../dexjoco/dexjoco_openpi_client/cli/evaluate.py)
 - [`dexjoco/dexjoco_openpi_client/dexjoco_openpi_env.py`](../dexjoco/dexjoco_openpi_client/dexjoco_openpi_env.py)
-- [`dexjoco/dexjoco_openpi_client/eval_dexjoco_openpi.py`](../dexjoco/dexjoco_openpi_client/eval_dexjoco_openpi.py)
 - [`configs/rand_obj/*.yaml`](../configs/rand_obj)
 - [`configs/rand_full/*.yaml`](../configs/rand_full)
 

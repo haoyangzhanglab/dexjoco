@@ -2,16 +2,20 @@
 
 import argparse
 import json
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 import numpy as np
 import pyarrow.dataset as ds
+from numpy.typing import NDArray
 
 DATASET_ID = "DexJoCo/DexJoCo-Datasets-v1.1"
 DATASET_REVISION = "077bbed4a3c9807ae88dad06842b7989533ab2bc"
 
 
-def read_episodes(dataset_dir, episode_indices=None):
+def read_episodes(
+    dataset_dir: str | Path, episode_indices: Iterable[int] | None = None,
+) -> Iterator[tuple[int, NDArray[np.float64], dict]]:
     root = Path(dataset_dir)
     metadata = json.loads((root / "meta/info.json").read_text())
     with (root / "replay_initial_values.jsonl").open() as stream:
@@ -19,6 +23,9 @@ def read_episodes(dataset_dir, episode_indices=None):
     if [row["episode_index"] for row in entries] != list(range(metadata["total_episodes"])):
         raise ValueError("Initial scenes must cover every episode exactly once")
     indices = list(range(len(entries))) if episode_indices is None else list(episode_indices)
+    for index in indices:
+        if not 0 <= index < len(entries):
+            raise ValueError(f"Episode index {index} is outside [0, {len(entries)})")
     table = ds.dataset(root / "data", format="parquet").to_table(
         columns=["episode_index", "frame_index", "action"],
         filter=ds.field("episode_index").isin(indices),
@@ -28,9 +35,15 @@ def read_episodes(dataset_dir, episode_indices=None):
         frames = np.asarray(rows["frame_index"])
         if not len(frames) or not np.array_equal(frames, np.arange(len(frames))):
             raise ValueError(f"Episode {index} has missing or duplicate frame indices")
-        actions = np.asarray(rows["action"].combine_chunks().flatten()).reshape(len(rows), -1)
+        action_column = rows["action"].combine_chunks()
+        widths = np.asarray(action_column.value_lengths())
+        if not np.all(widths == widths[0]) or widths[0] == 0:
+            raise ValueError(f"Episode {index} has inconsistent action widths")
+        actions = np.asarray(action_column.flatten()).reshape(len(rows), int(widths[0]))
         if actions.dtype != np.float64:
             raise ValueError("Replay requires the original v1.1 float64 quaternion actions")
+        if not np.isfinite(actions).all():
+            raise ValueError(f"Episode {index} has non-finite actions")
         yield index, actions, entries[index]["replay_initial_values"]
 
 

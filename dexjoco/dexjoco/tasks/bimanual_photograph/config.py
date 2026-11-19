@@ -1,5 +1,7 @@
 from typing import Literal
 
+from gymnasium import Env
+
 from ...sim.envs.panda_bimanual_photograph_env import PandaBimanualPhotographGymEnv
 from ..config import TaskConfigBase
 from ..obs_adapters import DexjocoObsAdapter
@@ -27,15 +29,11 @@ class TaskConfig(TaskConfigBase):
         randomize=False,
         **kwargs,
     ):
-        env = PandaBimanualPhotographGymEnv(
+        env: Env = PandaBimanualPhotographGymEnv(
             render_mode=render_mode, randomize=randomize, hz=30, **kwargs
         )
         if policy_mode:
             env = DualArmPolicyWrapper(env)
         else:
             env = DualArmViveHandTeleopWrapper(env, self.teleop)
-        env = DexjocoObsAdapter(env, proprio_keys=self.proprio_keys)
-        return env
-
-    def process_demos(self, demo):
-        return demo
+        return DexjocoObsAdapter(env, proprio_keys=self.proprio_keys)

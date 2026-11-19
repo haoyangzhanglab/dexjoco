@@ -617,15 +617,12 @@ class PandaWaterPlantGymEnv(MujocoGymEnv):
         return obs
 
     def close(self):
-        viewer = getattr(self, "_mj_viewer", None)
-        if viewer is not None:
-            try:
-                viewer.close()
-            except Exception:
-                # Cleanup must be best-effort at shutdown.
-                pass
-
-        super().close()
+        try:
+            if self._mj_viewer is not None:
+                self._mj_viewer.close()
+                self._mj_viewer = None
+        finally:
+            super().close()
 
     def get_end_effector_pose_matrix(self) -> np.ndarray:
         pos = self._data.mocap_pos[0]

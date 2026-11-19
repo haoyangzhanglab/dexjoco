@@ -49,8 +49,7 @@ class DexJoCoEnv(gym.Wrapper):
         self.camera = "back" if task_name.startswith("bimanual_") else "front"
         self.camera_id = self.env.model.camera(self.camera).id
         self.dt = CONTROL_TIMESTEP
-        self.video_fps = round(1 / self.dt)
-        self.metadata = {"render_modes": ["rgb_array"], "render_fps": self.video_fps}
+        self.metadata = {"render_modes": ["rgb_array"], "render_fps": round(1 / self.dt)}
         self.record_video = record_video
         self.frames = []
         native_spaces = cast(spaces.Dict, self.env.observation_space)

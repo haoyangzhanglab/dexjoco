@@ -1,12 +1,9 @@
 """DexJoCo environment wrapper for OpenPI inference."""
 
-import copy
+from typing import Literal
 
 import numpy as np
-from dexjoco.tasks import CONFIG_MAPPING
-from openpi_client import image_tools
 from scipy.spatial.transform import Rotation as R
-from typing import Literal
 
 
 class DexJoCoOpenPIEnv:
@@ -58,15 +55,15 @@ class DexJoCoOpenPIEnv:
         self.password = password
 
         self.env = None
-        # Processed one-frame observation used as OpenPI policy input.
-        self.obs = {}
-        # Latest raw camera frames, kept at original resolution for recording.
-        self._raw_obs: dict = {}
+        self._obs: dict[str, np.ndarray] = {}
+        self._stay_action: np.ndarray | None = None
         self._done = False
         self._success = False
 
     def start(self):
         """Instantiate the underlying DexJoCo simulation environment."""
+        from dexjoco.tasks import CONFIG_MAPPING
+
         config = CONFIG_MAPPING[self.env_name]()
 
         if self.env_name == "bimanual_unlock_ipad" and self.password is not None:
@@ -94,14 +91,12 @@ class DexJoCoOpenPIEnv:
             self.env = None
 
     def reset(self):
-        """Reset the environment and refresh the current processed observation."""
+        """Reset the environment and cache the initial observation."""
         assert self.env is not None, "Environment not started. Call start() first."
-        obs, _ = self.env.reset()
+        self._obs, _ = self.env.reset()
         self._done = False
         self._success = False
-
-        self._update_raw_obs(obs)
-        self.obs = self._process_obs(obs)
+        self._stay_action = None
 
     def step(self, action: np.ndarray):
         """Execute one OpenPI-format action in the DexJoCo environment.
@@ -112,61 +107,39 @@ class DexJoCoOpenPIEnv:
                 [r_xyz(3), r_rotvec(3), r_hand(16),
                 l_xyz(3), l_rotvec(3), l_hand(16)].
         """
+        self._stay_action = None
+        return self._step(self._process_action(action))
+
+    def get_obs(self) -> dict[str, np.ndarray | str]:
+        """Build the OpenPI input from the latest simulation observation."""
+        from openpi_client import image_tools
+
+        images = {
+            key: image_tools.convert_to_uint8(image_tools.resize_with_pad(img, 224, 224))
+            for key, img in self.get_raw_images().items()
+        }
+        state = self._obs["state"][:46 if self.dual_arm else 23]
+        if self.pad_state_dim46 and not self.dual_arm:
+            state = np.pad(state, (0, 23))
+        return {
+            **{key: images[raw_key] for key, raw_key in self.camera_mapping.items()},
+            "state": state.copy(),
+            "prompt": self.prompt,
+        }
+
+    def stay(self):
+        """Hold the pose measured at the start of a gap between action chunks."""
+        if self._stay_action is None:
+            # The proprioception prefix uses the task wrapper's quaternion action order.
+            self._stay_action = self._obs["state"][:46 if self.dual_arm else 23].copy()
+        return self._step(self._stay_action)
+
+    def _step(self, action: np.ndarray):
         assert self.env is not None, "Environment not started. Call start() first."
-        env_action = self._process_action(action)
-        obs, reward, terminated, truncated, info = self.env.step(env_action)
-
-        self._done = bool(terminated)
-        self._success = info.get("succeed", False)
-
-        self._update_raw_obs(obs)
-        self.obs = self._process_obs(obs)
-
+        self._obs, _, terminated, truncated, info = self.env.step(action)
+        self._done = bool(terminated or truncated)
+        self._success = bool(info.get("succeed", False))
         return info.get("pressed_digits")
-
-    def get_obs(self) -> dict[str, np.ndarray]:
-        """Return a copy of the latest processed policy observation."""
-        return copy.deepcopy(self.obs)
-
-    def stay(self, continue_stay: bool = False):
-        """Hold the current robot pose by sending the current state as an action."""
-        if continue_stay:
-            stay_state = self.last_stay_state
-        else:
-            stay_state = self.obs["state"]
-            self.last_stay_state = stay_state
-
-        if self.dual_arm:
-            # state: [r_arm(7), l_arm(7), r_hand(16), l_hand(16)]
-            # action:
-            # [r_xyz(3), r_rotvec(3), r_hand(16), l_xyz(3), l_rotvec(3), l_hand(16)]
-            r_arm = stay_state[:7]
-            l_arm = stay_state[7:14]
-            r_hand = stay_state[14:30]
-            l_hand = stay_state[30:46]
-
-            r_xyz = r_arm[:3]
-            r_quat = r_arm[3:7]
-            r_rotvec = R.from_quat(r_quat, scalar_first=True).as_rotvec()
-
-            l_xyz = l_arm[:3]
-            l_quat = l_arm[3:7]
-            l_rotvec = R.from_quat(l_quat, scalar_first=True).as_rotvec()
-
-            action = np.concatenate([r_xyz, r_rotvec, r_hand, l_xyz, l_rotvec, l_hand])
-        else:
-            # state: [arm(7), hand(16)]
-            # action: [xyz(3), rotvec(3), hand(16)]
-            arm = stay_state[:7]
-            hand = stay_state[7:23]
-
-            xyz = arm[:3]
-            quat = arm[3:7]
-            rotvec = R.from_quat(quat, scalar_first=True).as_rotvec()
-
-            action = np.concatenate([xyz, rotvec, hand])
-
-        return self.step(action)
 
     @property
     def is_done(self) -> bool:
@@ -175,31 +148,6 @@ class DexJoCoOpenPIEnv:
     @property
     def is_success(self) -> bool:
         return self._success
-
-    def _process_obs(self, env_obs: dict) -> dict[str, np.ndarray]:
-        """Convert DexJoCo observations to OpenPI policy input format.
-
-        Images are resized to 224x224 and converted to uint8. State values stay
-        in the environment coordinate system and are not normalized here.
-        """
-        obs_dict = {}
-
-        for policy_key, env_key in self.camera_mapping.items():
-            img = env_obs[env_key]
-            obs_dict[policy_key] = image_tools.convert_to_uint8(
-                image_tools.resize_with_pad(img, 224, 224)
-            )
-
-        if self.dual_arm:
-            state = env_obs["state"][:46]
-        else:
-            state = env_obs["state"][:23]
-            if self.pad_state_dim46:
-                state = np.concatenate([state, np.zeros(46 - len(state))])
-        obs_dict["state"] = state
-        obs_dict["prompt"] = self.prompt
-
-        return obs_dict
 
     def _process_action(self, action: np.ndarray) -> np.ndarray:
         """Convert OpenPI policy actions to DexJoCo environment action format."""
@@ -224,12 +172,6 @@ class DexJoCoOpenPIEnv:
 
             return np.concatenate([xyz, quat, hand])
 
-    def _update_raw_obs(self, env_obs: dict):
-        """Cache raw camera frames from the latest environment observation."""
-        self._raw_obs = {}
-        for env_key in self.camera_mapping.values():
-            self._raw_obs[env_key] = env_obs[env_key]
-
     def get_raw_images(self) -> dict[str, np.ndarray]:
         """Return latest raw camera frames at their original resolution."""
-        return self._raw_obs
+        return {key: self._obs[key] for key in self.camera_mapping.values()}

@@ -1,5 +1,7 @@
 from typing import Literal
 
+from gymnasium import Env
+
 from ...sim.envs.panda_water_plant_env import PandaWaterPlantGymEnv
 from ..config import TaskConfigBase
 from ..obs_adapters import DexjocoObsAdapter
@@ -29,7 +31,7 @@ class TaskConfig(TaskConfigBase):
         randomize: bool = False,
         **kwargs,
     ):
-        env = PandaWaterPlantGymEnv(
+        env: Env = PandaWaterPlantGymEnv(
             render_mode=render_mode,
             randomize=randomize,
             hz=30,
@@ -39,8 +41,4 @@ class TaskConfig(TaskConfigBase):
             env = SingleArmPolicyWrapper(env)
         else:
             env = SingleArmViveHandTeleopWrapper(env, self.teleop)
-        env = DexjocoObsAdapter(env, proprio_keys=self.proprio_keys)
-        return env
-
-    def process_demos(self, demo):
-        return demo
+        return DexjocoObsAdapter(env, proprio_keys=self.proprio_keys)

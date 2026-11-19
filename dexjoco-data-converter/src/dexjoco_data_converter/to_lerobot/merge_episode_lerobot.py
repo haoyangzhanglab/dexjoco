@@ -1,24 +1,24 @@
-import os
-import logging
 import multiprocessing as mp
+import os
 import sys
 from collections import OrderedDict
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
+from itertools import islice
 from pathlib import Path
 from queue import Empty
-from typing import Any, cast, Literal
+from typing import Any, cast
 
-import imageio
+import imageio.v2 as imageio
 import imageio.v3 as iio
 import numpy as np
 import yaml
 import zarr
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
-from dataclasses import dataclass
+from imageio.core.format import Format
 from zarr import Array, Group
 
-from ..episode_common import find_first_non_static_frame
+from ..episode_common import find_episodes, find_first_non_static_frame
 from ..process_protocol import DoneMsg, ErrorMsg, InitMsg, ProgressBar, ProgressMsg
 from ..utils import dict_to_slice, normalize_array_shape, terminate_process
 
@@ -35,7 +35,6 @@ def _load_episode_arrays(
     Returns:
         Mapping from selected key to a normalized ``float32`` NumPy array.
     """
-    # Load all arrays from replay.zarr/data group as numpy arrays.
     root = cast(Group, zarr.open(str(zarr_path), mode="r"))
     data_group = cast(Group, root["data"])
 
@@ -46,42 +45,42 @@ def _load_episode_arrays(
     return episode_data
 
 
-@dataclass
-class ProcessVideoMessage:
-    type: Literal["frame", "end"]
-    step: int
-    frame: np.ndarray | None
+def _image_size(videos_dir: Path, raw_cameras: set[str]) -> tuple[int, int]:
+    sizes = set()
+    for camera in sorted(raw_cameras):
+        video = videos_dir / f"{camera}.mp4"
+        height, width, _ = iio.improps(video, index=0).shape
+        sizes.add((height, width))
+    if len(sizes) != 1:
+        raise ValueError(f"{videos_dir}: expected selected RGB videos of one size, got {sorted(sizes)}")
+    return sizes.pop()
 
 
-def _process_video_task(
-    video_name: str,  # video_name(include ".mp4")
+def _write_episode(
+    dataset: LeRobotDataset,
     videos_dir: Path,
+    actions: np.ndarray,
+    states: np.ndarray,
+    camera_map: dict[str, str],
+    instruction: str,
     start_idx: int,
-    que: mp.Queue,
-):
-    """Decode one video and stream frames through a multiprocessing queue.
-
-    Args:
-        video_name: Source video file name, including extension.
-        videos_dir: Directory containing source videos.
-        start_idx: Number of leading frames to skip.
-        que: Queue receiving ``ProcessVideoMessage`` frame and end messages.
-
-    Returns:
-        None.
-    """
-    video_path = videos_dir / video_name
-
-    reader = imageio.get_reader(video_path)
-    try:
-        for i, frame in enumerate(reader.iter_data()):
-            if i < start_idx:
-                continue
-            que.put(ProcessVideoMessage(type="frame", step=i - start_idx, frame=frame))
-        que.put(ProcessVideoMessage(type="end", step=i + 1 - start_idx, frame=None))
-    finally:
-        reader.close()
-    return
+) -> None:
+    with ExitStack() as stack:
+        frames_by_camera = {}
+        for raw_camera in dict.fromkeys(camera_map.values()):
+            reader = cast(
+                Format.Reader,
+                stack.enter_context(imageio.get_reader(videos_dir / f"{raw_camera}.mp4")),
+            )
+            frames_by_camera[raw_camera] = islice(reader.iter_data(), start_idx, None)
+        aligned = zip(actions, states, *frames_by_camera.values(), strict=True)
+        for action, state, *frames in aligned:
+            raw_images = dict(zip(frames_by_camera, frames, strict=True))
+            frame_data: dict[str, Any] = {"task": instruction, ACTION: action, OBS_STATE: state}
+            for camera, raw_camera in camera_map.items():
+                frame_data[f"{OBS_IMAGES}.{camera}"] = raw_images[raw_camera]
+            dataset.add_frame(frame_data)
+    dataset.save_episode()
 
 
 def _build_features(
@@ -220,35 +219,12 @@ def _merge_episode_worker_impl(
         selected_cam_map: OrderedDict[str, str] = OrderedDict(selected_data["cameras"])
         selected_raw_cams = set(selected_cam_map.values())
 
-        # * Get num episodes
-        episode_dirs = [d for d in input_dir.iterdir()]
-        episode_dirs.sort(key=lambda x: x.name)
-
-        if bad_episodes is not None:
-            assert set(bad_episodes).issubset(set(d.name for d in episode_dirs)), (
-                "bad_episodes must be a subset of episode directories"
-            )
-            episode_dirs = [d for d in episode_dirs if d.name not in bad_episodes]
+        episode_dirs = find_episodes(input_dir, bad_episodes)
         message_queue.put(
             InitMsg(dataset_name=dataset_name, total_episodes=len(episode_dirs))
         )
 
-        # * Map between video key and file name
-        first_episode_videos = (episode_dirs[0] / "videos").iterdir()
-        first_episode_videos = sorted(first_episode_videos, key=lambda x: x.name)
-        assert selected_raw_cams.issubset(
-            set(v.stem for v in first_episode_videos)
-        ), "Selected cameras must be a subset of available videos in the first episode"
-
-        # * Get image size
-        props = iio.improps(first_episode_videos[0], index=0)
-        image_size = tuple(props.shape[:2])
-        if image_size[0] != image_size[1]:
-            logging.warning(
-                f"Non-square frames detected in {first_episode_videos[0]}: {image_size}"
-            )
-
-        # * Get shape and buile features
+        image_size = _image_size(episode_dirs[0] / "videos", selected_raw_cams)
         first_episode_data = _load_episode_arrays(
             episode_dirs[0] / "replay.zarr",
             selected_keys=[selected_action_key, selected_state_key],
@@ -282,108 +258,55 @@ def _merge_episode_worker_impl(
         message_queue.put(ErrorMsg(dataset_name=dataset_name, error=str(e)))
         raise
 
-    video_queues = None
-    video_processes = None
-    for ep_dir in episode_dirs:
-        try:
-            zarr_file = ep_dir / "replay.zarr"
-            videos_dir = ep_dir / "videos"
+    try:
+        for ep_dir in episode_dirs:
+            try:
+                zarr_file = ep_dir / "replay.zarr"
+                videos_dir = ep_dir / "videos"
 
-            episode_data = _load_episode_arrays(
-                zarr_file,
-                selected_keys=[selected_action_key, selected_state_key],
-            )
-            n_steps = episode_data[selected_action_key].shape[0]
-
-            if skip_static_frames:
-                start_idx = find_first_non_static_frame(
-                    episode_data[selected_action_key]
+                episode_data = _load_episode_arrays(
+                    zarr_file,
+                    selected_keys=[selected_action_key, selected_state_key],
                 )
-                if start_idx < n_steps and np.all(
-                    episode_data[selected_action_key][start_idx] == 0
-                ):
-                    start_idx += 1
-                total_truncated_frames += start_idx
-                for key in episode_data:
-                    episode_data[key] = episode_data[key][start_idx:]
-                n_steps -= start_idx
-            else:
-                start_idx = 0
-            for k, v in slice_cfg.items():
-                episode_data[k] = episode_data[k][:, v]
+                n_steps = episode_data[selected_action_key].shape[0]
 
-            video_queues = {raw_cam: mp.Queue() for raw_cam in selected_raw_cams}
-            video_processes = {
-                raw_cam: mp.Process(
-                    target=_process_video_task,
-                    args=(
-                        f"{raw_cam}.mp4",
-                        videos_dir,
-                        start_idx,
-                        video_queues[raw_cam],
-                    ),
-                )
-                for raw_cam in selected_raw_cams
-            }
-
-            for p in video_processes.values():
-                p.start()
-
-            for t in range(n_steps):
-                frame_data: dict[str, Any] = {"task": language_instruction}
-                frame_data[ACTION] = episode_data[selected_action_key][t]
-                frame_data[OBS_STATE] = episode_data[selected_state_key][t]
-                raw_video_frame: dict[str, np.ndarray] = {}
-                for raw_cam in selected_raw_cams:
-                    try:
-                        video_msg = video_queues[raw_cam].get(timeout=30.0)
-                    except Empty:
-                        if not video_processes[raw_cam].is_alive():
-                            raise Exception(f"decoder process died: {raw_cam}")
-                        raise Exception(f"waiting frame timeout: {raw_cam}, step={t}")
-                    assert video_msg.type == "frame" and video_msg.step == t, (
-                        "Video processing out of sync"
+                if skip_static_frames:
+                    start_idx = find_first_non_static_frame(
+                        episode_data[selected_action_key]
                     )
-                    raw_video_frame[raw_cam] = video_msg.frame
-                for cam_name, raw_cam in selected_cam_map.items():
-                    frame_data[f"{OBS_IMAGES}.{cam_name}"] = raw_video_frame[raw_cam]
-                dataset.add_frame(frame_data)
-            dataset.save_episode()
-            total_steps += n_steps
+                    if start_idx < n_steps and np.all(
+                        episode_data[selected_action_key][start_idx] == 0
+                    ):
+                        start_idx += 1
+                    total_truncated_frames += start_idx
+                    for key in episode_data:
+                        episode_data[key] = episode_data[key][start_idx:]
+                    n_steps -= start_idx
+                else:
+                    start_idx = 0
+                for k, v in slice_cfg.items():
+                    episode_data[k] = episode_data[k][:, v]
 
-            for p in video_processes.values():
-                p.join(timeout=10.0)
-                assert not p.is_alive(), "Video processing did not finish properly"
-
-            for raw_cam in selected_raw_cams:
-                video_msg = video_queues[raw_cam].get(timeout=10.0)
-
-                assert video_msg.type == "end" and video_msg.step == n_steps, (
-                    "Video processing did not end properly"
+                _write_episode(
+                    dataset, videos_dir, episode_data[selected_action_key], episode_data[selected_state_key],
+                    selected_cam_map, language_instruction, start_idx,
                 )
-                video_queues[raw_cam].close()
+                total_steps += n_steps
 
-            message_queue.put(
-                ProgressMsg(dataset_name=dataset_name, episode_name=ep_dir.name)
-            )
-        except Exception as e:
-            message_queue.put(
-                ErrorMsg(
-                    dataset_name=dataset_name,
-                    error=str(e),
-                    episode_name=ep_dir.name,
+                message_queue.put(
+                    ProgressMsg(dataset_name=dataset_name, episode_name=ep_dir.name)
                 )
-            )
-            if video_processes is not None:
-                for p in video_processes.values():
-                    if p.is_alive():
-                        p.terminate()
-                    p.join(timeout=1.0)
-            if video_queues is not None:
-                for q in video_queues.values():
-                    q.cancel_join_thread()
-                    q.close()
-            raise
+            except Exception as e:
+                message_queue.put(
+                    ErrorMsg(
+                        dataset_name=dataset_name,
+                        error=str(e),
+                        episode_name=ep_dir.name,
+                    )
+                )
+                raise
+    finally:
+        dataset.finalize()
 
     statistics_msg = (
         f"Output directory: {output_dir}\n"

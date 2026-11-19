@@ -46,7 +46,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-policy = ["pyarrow>=20", "huggingface-hub>=0.25,<1"]
+policy = [
+    "pyarrow>=20",
+    "huggingface-hub>=0.25,<1",
+    "scipy==1.15.3",
+    "gymnasium==1.4.0",
+    "jax==0.4.38",
+]
 
 [project.scripts]
 dexjoco-openpi-eval = "dexjoco_openpi_client.cli.evaluate:main"

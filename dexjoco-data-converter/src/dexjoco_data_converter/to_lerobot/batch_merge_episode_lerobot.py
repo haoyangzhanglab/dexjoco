@@ -112,23 +112,12 @@ def batch_merge_episode(
                         continue
                 bars[msg.dataset_name].update(msg)
 
-            for dataset_name, future in futures.items():
-                try:
-                    future.result()
-                except Exception as e:
-                    print(f"Worker execution failed: {dataset_name}(error={e})")
+            for future in futures.values():
+                future.result()
     finally:
         manager.shutdown()
         for bar in bars.values():
             bar.close()
-
-    # handle failure
-    failed = [name for name, bar in bars.items() if bar.state.status == "failed"]
-    if failed:
-        details = ", ".join(
-            f"{name}(error={bars[name].state.last_error})" for name in failed
-        )
-        raise Exception(f"Failed datasets: {details}")
 
     for bar in bars.values():
         state = bar.state

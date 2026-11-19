@@ -1,34 +1,17 @@
 """Per-task helpers that patch a freshly reset env to match a recorded state[0].
 
 `restore_initial_state` is the public entry point used by the replay script: it
-splits the recorded flat proprio vector by `config.proprio_keys`, dispatches to
+splits the recorded flat state by `config.proprio_keys`, dispatches to
 the task-specific restorer, runs an `mj_forward`, and returns the refreshed
 wrapped observation.
 
-Each restorer only writes the fields recorded as proprio (object poses + table
-height). Everything else (lighting, table texture, third-person camera) is left
-to whatever `env.reset()` produced, so visual randomization stays effective.
+Each restorer applies the recorded object poses and table height. Lighting,
+table texture and camera randomization come from `env.reset()`.
 """
 
 import mujoco
 import numpy as np
-
-
-def _split_state_by_proprio(state_vec, proprio_keys, ref_state):
-    """Split a flat proprio vector back into a {proprio_key: array} dict.
-
-    Sizes come from a fresh `_compute_observation()` sample because some envs
-    declare e.g. `gripper_pose` as `(1,)` in `observation_space` while actually
-    returning a 16-d sensor vector; `DexjocoObsAdapter` flattens the real
-    array, not the spec.
-    """
-    parts = {}
-    offset = 0
-    for key in proprio_keys:
-        size = max(1, np.asarray(ref_state[key]).ravel().size)
-        parts[key] = np.asarray(state_vec[offset : offset + size], dtype=np.float64)
-        offset += size
-    return parts
+from gymnasium.spaces import flatdim
 
 
 def _apply_delta_h(raw_env, delta_h):
@@ -179,7 +162,7 @@ def _restore_bimanual_assembly(raw_env, parts):
 
 def _restore_bimanual_hanoi(raw_env, parts):
     _apply_delta_h(raw_env, float(parts["table_delta_height"][0]))
-    base = np.asarray(parts["hanoi_base_ori_pos"], dtype=np.float64)
+    base = parts["hanoi_base_ori_pos"]
     raw_env._model.body_pos[raw_env._base_body_id] = base
     raw_env.base_ori_pos = base.copy()
     # Re-stack disks at the recorded base position; the tower preset matches
@@ -245,26 +228,27 @@ _STATE_RESTORERS = {
 }
 
 
-def has_restorer(task_id):
-    """True if `task_id` has a registered initial-state restorer."""
-    return task_id in _STATE_RESTORERS
-
-
 def restore_initial_state(env, task_id, config, state_vec):
     """Patch a freshly reset env to match the recorded `state[0]`.
 
     Args:
         env: a wrapped env (e.g. the one returned by `TaskConfig.get_environment`).
-        task_id: key into the task registry; must satisfy `has_restorer(task_id)`.
+        task_id: key into the task registry.
         config: the matching `TaskConfig` (used for `proprio_keys`).
-        state_vec: 1-D recorded proprio vector for `t = 0`.
+        state_vec: 1-D recorded state for `t = 0`.
 
     Returns:
         The refreshed wrapped observation produced after the restore + mj_forward.
     """
     raw_env = env.unwrapped
-    ref_state = raw_env._compute_observation()["state"]
-    parts = _split_state_by_proprio(state_vec, config.proprio_keys, ref_state)
+    state_space = raw_env.observation_space["state"]
+    state_vec = np.asarray(state_vec, dtype=np.float64)
+    parts = {}
+    offset = 0
+    for key in config.proprio_keys:
+        end = offset + flatdim(state_space[key])
+        parts[key] = state_vec[offset:end]
+        offset = end
     _STATE_RESTORERS[task_id](raw_env, parts)
     mujoco.mj_forward(raw_env._model, raw_env._data)
     return env.observation(raw_env._compute_observation())
