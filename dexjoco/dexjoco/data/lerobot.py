@@ -26,6 +26,10 @@ def read_episodes(
     for index in indices:
         if not 0 <= index < len(entries):
             raise ValueError(f"Episode index {index} is outside [0, {len(entries)})")
+    episode_metadata = ds.dataset(root / "meta/episodes", format="parquet").to_table(
+        columns=["episode_index", "length"],
+    ).to_pydict()
+    lengths = dict(zip(episode_metadata["episode_index"], episode_metadata["length"]))
     table = ds.dataset(root / "data", format="parquet").to_table(
         columns=["episode_index", "frame_index", "action"],
         filter=ds.field("episode_index").isin(indices),
@@ -33,8 +37,11 @@ def read_episodes(
     for index in indices:
         rows = table.filter(ds.field("episode_index") == index).sort_by("frame_index")
         frames = np.asarray(rows["frame_index"])
-        if not len(frames) or not np.array_equal(frames, np.arange(len(frames))):
-            raise ValueError(f"Episode {index} has missing or duplicate frame indices")
+        length = lengths[index]
+        if not len(frames) or not np.array_equal(frames, np.arange(length)):
+            raise ValueError(
+                f"Episode {index} requires {length} consecutive frames from index 0, got {len(frames)} rows"
+            )
         action_column = rows["action"].combine_chunks()
         widths = np.asarray(action_column.value_lengths())
         if not np.all(widths == widths[0]) or widths[0] == 0:
@@ -48,7 +55,7 @@ def read_episodes(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Download v1.1 rand_obj actions and initial scenes; omit videos")
+    parser = argparse.ArgumentParser(description="Download low-dimensional v1.1 rand_obj demonstrations")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--tasks", nargs="+", required=True)
     args = parser.parse_args()
@@ -57,7 +64,7 @@ def main():
     patterns = [
         f"rand_obj/{task}/{suffix}"
         for task in args.tasks
-        for suffix in ("data/**", "meta/info.json", "replay_initial_values.jsonl")
+        for suffix in ("data/**", "meta/episodes/**", "meta/info.json", "replay_initial_values.jsonl")
     ]
     snapshot_download(
         DATASET_ID, repo_type="dataset", revision=DATASET_REVISION,

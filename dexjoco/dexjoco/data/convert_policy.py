@@ -62,17 +62,7 @@ def convert_dataset(
                 observation_timing="before_action", camera=env.camera,
                 offsamples=int(env.env.model.vis.quality.offsamples),
                 randomize=env.env.randomize, randomize_dynamics=env.env.randomize_dynamics,
-                data_processing={
-                    "proprio": {"layout": "right_pose_wxyz_fingers_then_left_if_bimanual"},
-                    "rgb": {
-                        "camera": "ego", "source": "native_renderer",
-                        "size": [env.env.render_height, env.env.render_width],
-                    },
-                    "point_cloud": {
-                        "frame": "world", "xyz_unit": "m", "rgb_range": [0, 1],
-                        "num_points": env.num_points, "sampling": "uniform_valid_pixels",
-                    },
-                },
+                data_processing=env.data_processing,
             )
             expected_shape = env.action_space.shape
             for index, actions, initial in read_episodes(dataset_dir, indices):

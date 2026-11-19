@@ -72,6 +72,20 @@ class DexJoCoEnv(gym.Wrapper):
     def action_cnt(self) -> int:
         return self.env.state_machine.step_count
 
+    @property
+    def data_processing(self) -> dict:
+        return {
+            "proprio": {"layout": "right_pose_wxyz_fingers_then_left_if_bimanual"},
+            "rgb": {
+                "camera": "ego", "source": "native_renderer",
+                "size": [self.env.render_height, self.env.render_width],
+            },
+            "point_cloud": {
+                "frame": "world", "xyz_unit": "m", "rgb_range": [0, 1],
+                "num_points": self.num_points, "sampling": "uniform_valid_pixels",
+            },
+        }
+
     def observation(self, raw):
         self.rgb = raw["pixels"]["ego"]
         observation = {"proprio": raw["agent_pos"], "rgb": self.rgb}
