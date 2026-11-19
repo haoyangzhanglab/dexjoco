@@ -20,10 +20,10 @@ and ⚙️ **reasoning**, together with a low-cost teleoperation data collection
 system, replayable demonstrations, domain randomization, and OpenPI π0.5 policy
 training/evaluation support.
 
-**dexmani_policy (DP / DP3):** use the existing Conda `policy` environment and
-the [v1.1 training and evaluation guide](docs/dexmani_policy.md). This path uses
-the standalone v1.1 task environments; the OpenPI interfaces and action
-ordering described below belong to the teleoperation/OpenPI workflow.
+**dexmani_policy (DP / DP3).** Export Zarr from the standalone v1.1 tasks and
+move it to `dexmani_policy/robot_data/dexjoco/`. Run training and evaluation
+from the policy repository. The OpenPI sections below use the teleoperation task
+interfaces and action ordering. [v1.1 training and evaluation guide](docs/dexmani_policy.md)
 
 <table width="100%">
   <tr>

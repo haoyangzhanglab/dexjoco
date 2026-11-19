@@ -57,7 +57,7 @@ def main():
     patterns = [
         f"rand_obj/{task}/{suffix}"
         for task in args.tasks
-        for suffix in ("data/**", "meta/**", "replay_initial_values.jsonl")
+        for suffix in ("data/**", "meta/info.json", "replay_initial_values.jsonl")
     ]
     snapshot_download(
         DATASET_ID, repo_type="dataset", revision=DATASET_REVISION,

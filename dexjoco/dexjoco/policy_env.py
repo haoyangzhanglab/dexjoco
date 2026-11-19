@@ -11,6 +11,12 @@ from dexjoco.common import CONTROL_TIMESTEP
 from dexjoco.env_factory import TaskEnv, make_env
 
 
+def _policy_info(info: dict) -> dict:
+    success = bool(info.pop("is_success"))
+    info.update(success=success, success_condition=success)
+    return info
+
+
 def depth_to_point_cloud(rgb, depth, *, fovy, position, rotation, far, num_points):
     """Metric depth to world XYZ (meters) and RGB [0, 1], at pixel centers."""
     height, width = depth.shape
@@ -51,7 +57,7 @@ class DexJoCoEnv(gym.Wrapper):
         self.dt = CONTROL_TIMESTEP
         self.metadata = {"render_modes": ["rgb_array"], "render_fps": round(1 / self.dt)}
         self.record_video = record_video
-        self.frames = []
+        self.video_frames = []
         native_spaces = cast(spaces.Dict, self.env.observation_space)
         observation_spaces = {
             "proprio": native_spaces["agent_pos"],
@@ -85,23 +91,26 @@ class DexJoCoEnv(gym.Wrapper):
                 rotation=data.cam_xmat[self.camera_id].reshape(3, 3),
                 far=model.vis.map.zfar * model.stat.extent, num_points=self.num_points,
             )
-        if self.record_video:
-            self.frames.append(self.rgb)
         return {key: observation[key] for key in observation_spaces}
 
     def reset(self, *, seed=None, options=None):
-        self.frames.clear()
+        self.video_frames.clear()
         raw, info = self.env.reset(seed=seed, options=options)
-        return self.observation(raw), info
+        return self.observation(raw), _policy_info(info)
 
     def step(self, action):
         raw, reward, terminated, truncated, info = self.env.step(action)
-        success = bool(info["is_success"])
-        info = {**info, "success": success, "success_condition": success}
-        return self.observation(raw), reward, terminated, truncated, info
+        observation = self.observation(raw)
+        if self.record_video:
+            self.video_frames.append(self.rgb)
+        return observation, reward, terminated, truncated, _policy_info(info)
 
     def render(self):
         return self.rgb
 
     def get_video(self):
-        return np.asarray(self.frames)
+        if not self.video_frames:
+            return None
+        video = np.stack(self.video_frames)
+        self.video_frames.clear()
+        return video

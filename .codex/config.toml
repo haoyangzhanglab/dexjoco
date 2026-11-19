@@ -1,15 +1,16 @@
-model_verbosity = "low"
-web_search = "live"
-
-# Keep sandbox escalation available and route it through automatic review.
+# Shell approval and sandbox settings.
 approval_policy = "on-request"
 approvals_reviewer = "auto_review"
 sandbox_mode = "workspace-write"
 
+# Session defaults. Web search is separate from shell network access.
+model_verbosity = "low"
+web_search = "live"
+
 [sandbox_workspace_write]
-# Paths are relative to this .codex directory.
-writable_roots = ["../../dexmani_policy"]
 network_access = false
+# The sibling dexmani_policy checkout is relative to this .codex directory.
+writable_roots = ["../../dexmani_policy"]
 
 [agents]
 max_concurrent_threads_per_session = 2

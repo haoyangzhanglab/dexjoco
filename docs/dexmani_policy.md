@@ -1,21 +1,20 @@
 # 使用 dexmani_policy 训练和评测 DexJoCo
 
-DP 使用 RGB，DP3 使用点云。两者都使用原生本体状态和末端 rotvec 动作。DexJoCo 提供环境、数据转换和仿真 runner，训练使用 dexmani_policy 的内置配方与下文的 DexJoCo 参数。
+在 DexJoCo 导出官方 v1.1 示教，再将 Zarr 移到 `dexmani_policy` 训练。评测由 `dexmani_policy` 调用已安装的 DexJoCo 环境。DP 使用 RGB，DP3 使用点云，两者都使用原生本体状态和末端 rotvec 动作。
 
 ## 安装
 
-在 DexJoCo 根目录执行，使用已安装 dexmani_policy 的 Conda `policy` 环境。下例假设两个仓库并列检出，`-c` 复用 dexmani_policy 的版本约束。
+仅训练时，按策略仓库的说明安装 `dexmani_policy`。导出和仿真评测需要安装 DexJoCo，在 DexJoCo 根目录执行以下命令。 [dexmani_policy 安装说明](https://github.com/haoyangzhanglab/dexmani_policy#快速使用)
 
 ```bash
-conda run -n policy python -m pip install \
-  -c ../dexmani_policy/requirements.txt -e './dexjoco[policy]'
+conda run -n policy python -m pip install -e './dexjoco[policy]'
 ```
 
-以下命令从仓库根目录通过 `scripts/run_policy.sh` 启动。脚本激活 `policy`，设置数值运行环境和 `MUJOCO_GL=egl`，再执行指定入口。
+如果同一环境中已安装 `dexmani_policy`，用其 `requirements.txt` 作为 `pip install -c` 的约束。记录导出时的 DexJoCo 提交（`git rev-parse HEAD`），评测安装相同提交。
 
 ## 下载原始数据
 
-下载固定版本的官方 v1.1 数据，只包含低维动作、元信息和初始场景：
+在 DexJoCo 根目录通过 `scripts/run_policy.sh` 下载固定版本的官方 v1.1 `rand_obj` 数据，包括动作 Parquet、`meta/info.json` 和 `replay_initial_values.jsonl`。
 
 ```bash
 bash scripts/run_policy.sh python -m dexjoco.data.lerobot \
@@ -39,42 +38,42 @@ bash scripts/run_policy.sh python -m dexjoco.data.convert_policy \
 
 ## 训练与续训
 
+导出完成后，手动将整个 `datasets/policy/<task>.zarr` 目录移到 `dexmani_policy/robot_data/dexjoco/<task>.zarr`。两种训练配方默认从该子目录读取。其他存放位置可通过 `zarr_path` 指定。首次训练会记录数据的绝对路径，续训沿用该路径。
+
+在 `dexmani_policy` 根目录执行以下命令。
+
 ```bash
 task_name=water_plant
-policy_method=dp3
-run_dir="$PWD/outputs/train/${policy_method}_${task_name}"
+recipe=dp3_dexjoco
+run_dir="experiments/train/${recipe}/${task_name}/run01"
 
-bash scripts/run_policy.sh python -m dexmani_policy.train \
-  --config-name "$policy_method" task_name="$task_name" \
-  zarr_path="$PWD/datasets/policy/$task_name.zarr" action_key=action_rotvec \
-  agent.state_key=proprio agent.state_dim=null \
-  dataset.sensor_modalities.0=proprio \
-  '~normalization.joint_state' +normalization.proprio=limits \
-  env_runner._target_=dexjoco.policy_runner.DexJoCoRunner env_runner.env_kwargs=null \
-  training.use_compile=false hydra.run.dir="$run_dir"
+bash scripts/training/train.sh "$recipe" task_name="$task_name" hydra.run.dir="$run_dir"
 
-bash scripts/run_policy.sh python -m dexmani_policy.training.resume \
-  --run "$run_dir"
+conda run --no-capture-output -n policy python -m dexmani_policy.training.resume --run "$run_dir"
 ```
 
-训练 DP 时改用 `policy_method=dp`，RGB 或点云模态由所选配方提供。`zarr_path` 指向转换结果，状态与动作维度从数据推导并写入 checkpoint。以上参数加载内置网络、采样窗口和图像或点云增强，关闭 `torch.compile` 以降低首次运行成本。
-
-`env_runner.env_kwargs=null` 清空内置配方的机器人环境参数，使用 `DexJoCoRunner` 的默认环境。续训读取 checkpoint 中保存的状态字段、runner 和其余训练配置。
+训练 DP 时使用 `recipe=dp_dexjoco`。通过 `task_name` 选择任务，两种配方都从 Zarr 推导状态与动作维度，并把评测使用的 runner 路径写入 checkpoint。训练和续训只需要策略依赖和 Zarr。
 
 ## 仿真评测
 
+在 `dexmani_policy` 根目录执行以下命令。
+
 ```bash
-bash scripts/run_policy.sh python -m dexmani_policy.evaluate \
+MUJOCO_GL=egl bash scripts/eval/evaluate.sh \
   --checkpoint "$run_dir/checkpoints/latest.pt" --episodes 10
 ```
 
-常规评测不录像；排查行为时追加 `--video`。
+追加 `--video` 可保存录像。
 
-评测从 checkpoint 创建 `DexJoCoRunner`，复用 policy 的观测历史、动作分块和推理循环。成功、终止和步数使用原生任务状态。录像按 0.02 s 控制周期以 50 fps 保存，评测结果写入训练目录的 `eval/`。多个 checkpoint 的选择与独立测试使用 `dexmani_policy.eval_pipeline --checkpoints ...`。
+评测从 checkpoint 创建 `DexJoCoRunner`，复用策略仓库的观测历史、动作分块和推理循环。结果写入训练目录下的 `eval/`。`result_details.json` 记录控制周期和相对录像路径 `videos/<task>/episode_<seed>.mp4`。启用录像时，从 224×224 的 ego 相机在每个控制步后取一帧，按原生控制周期以 50 fps 编码。
 
-默认采用 `rand_obj`：随机化物体位置和桌面高度，关闭视觉与动力学随机化。固定 seed 池为 `[10000, 20000)`，由 policy 划分互不重叠的 selection/test 集。
+`total_steps` 记录实际执行的控制步数。DexJoCo 的 `steps` 记录原生任务确认成功的步数，因此成功时等于 `total_steps`。`dexmani_sim` 的 `steps` 记录首次满足原始成功条件的步数，确认成功还可能需要持续多个控制步。
 
-同一任务下，runner、环境参数和控制周期一致的 DP 与 DP3 checkpoint 可共同参与选择。省略 `env_kwargs`、设为 `null` 或空字典均使用默认环境参数。
+多个 checkpoint 的选择与独立测试使用 `MUJOCO_GL=egl bash scripts/eval/eval_pipeline.sh --checkpoints ...`。
+
+默认采用 `rand_obj`，随机化物体位置和桌面高度，关闭视觉与动力学随机化。固定 seed 池为 `[10000, 20000)`，由策略仓库划分互不重叠的 selection/test 集。
+
+同一任务下，runner、环境参数和控制周期一致的 DP 与 DP3 checkpoint 可共同参与选择。
 
 ## 数据约定
 

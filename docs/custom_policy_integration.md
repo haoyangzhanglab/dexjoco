@@ -40,14 +40,14 @@ restoration, but they should not be used as policy inputs.
 
 ### Action
 
-DexJoCo policy actions use rotation vectors for end-effector orientation:
+The OpenPI policy uses rotation vectors for end-effector orientation:
 
 - single-arm policy action: 22 dimensions
   - `[xyz(3), rotvec(3), hand(16)]`
 - dual-arm policy action: 44 dimensions
   - `[r_xyz(3), r_rotvec(3), r_hand(16), l_xyz(3), l_rotvec(3), l_hand(16)]`
 
-The policy-mode environment accepts wxyz quaternion actions:
+The OpenPI environment wrapper accepts wxyz quaternion actions:
 
 - single-arm environment action: 23 dimensions
   - `[xyz(3), quat(4), hand(16)]`
@@ -69,14 +69,6 @@ of the latest response multiplied by `--replan-ratio`, with one request in fligh
 at a time. Set `--replan-ratio` in `(0, 1]`. During gaps between chunks, the
 simulator steps while holding the pose measured at the start of the gap.
 [OpenPI evaluation loop](../dexjoco/dexjoco_openpi_client/eval_dexjoco_openpi.py)
-
-## Multi-Frame Observation History
-
-The DP/DP3 path uses `DexJoCoRunner`, which inherits observation history and
-action chunk execution from `dexmani_policy.env_runner.sim_runner.SimRunner`.
-The runner pads initial history with the first observation, updates it after
-each action, and passes the latest `n_obs_steps` frames to the policy.
-See [DP/DP3 training and evaluation](dexmani_policy.md).
 
 ## Reusing `async_inference`
 
@@ -108,7 +100,3 @@ Use `dexjoco-openpi-eval` for server-based evaluation.
 - [`dexjoco/dexjoco_openpi_client/dexjoco_openpi_env.py`](../dexjoco/dexjoco_openpi_client/dexjoco_openpi_env.py)
 - [`configs/rand_obj/*.yaml`](../configs/rand_obj)
 - [`configs/rand_full/*.yaml`](../configs/rand_full)
-
-Use [dexmani_policy](dexmani_policy.md) for DP/DP3 evaluation. The
-[LeRobot reference](reference_code/dexjoco_lerobot_client) illustrates async
-inference integration.

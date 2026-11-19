@@ -33,7 +33,7 @@ def convert_dataset(
         staging = Path(directory) / "dataset.zarr"
         group = zarr.open_group(str(staging), mode="w-")
         fields = group.create_group("data")
-        compressor = Blosc(cname="zstd", clevel=3, shuffle=Blosc.BITSHUFFLE)
+        compressor = Blosc(cname="zstd", clevel=1, shuffle=Blosc.BITSHUFFLE)
         buffers: dict[str, list[np.ndarray]] = {
             key: [] for key in ("proprio", "rgb", "point_cloud", "action_rotvec")
         }
@@ -92,9 +92,9 @@ def convert_dataset(
                     if len(buffers["proprio"]) == 64:
                         flush()
                     observation, _, terminated, truncated, info = env.step(actions[frame])
-                    if info["is_success"] or terminated or truncated:
+                    if info["success"] or terminated or truncated:
                         break
-                if not info["is_success"]:
+                if not info["success"]:
                     raise RuntimeError(f"{task} episode {index} failed replay")
                 flush()
                 episode_ends.append(fields["proprio"].shape[0])
